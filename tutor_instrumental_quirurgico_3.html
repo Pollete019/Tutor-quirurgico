@@ -613,7 +613,8 @@ MODO 5 — IDENTIFICACIÓN VISUAL: El sistema tiene un banco de 50 imágenes rea
 REGLA FUNDAMENTAL: Trabaja SOLO con el material de la base de conocimiento anterior. Si se pregunta algo fuera de este material responde: "Eso va más allá del material disponible; centrémonos en lo que tenemos."
 `;
 
-const GEMINI_KEY = 'AQ.Ab8RN6LNNIxm3f-qAOhekYG1A2RVyPCsQhf2-iy7WKl4C4ypFg';
+// ⬇️ PON AQUÍ LA URL DE TU CLOUDFLARE WORKER
+const WORKER_URL = 'https://tutor-quirurgico.ana-fernandez.workers.dev';
 let history = [];
 let currentMode = null;
 let isLoading = false;
@@ -752,7 +753,7 @@ async function callClaude(userText, skipDisplay) {
   showTyping();
   
   try {
-    const resp = await fetch('https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=' + GEMINI_KEY, {
+    const resp = await fetch(WORKER_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -764,9 +765,10 @@ async function callClaude(userText, skipDisplay) {
     const data = await resp.json();
     hideTyping();
     if (data.error) {
+      console.error('Gemini API error:', JSON.stringify(data.error));
       const isAuth = data.error.code === 400 || data.error.code === 403;
       if (isAuth) document.getElementById('err-banner').style.display = 'block';
-      addMsg('assistant', 'Error de conexión con el tutor. Inténtalo de nuevo en unos segundos.');
+      addMsg('assistant', 'Error API: ' + data.error.message + ' (código ' + data.error.code + ')');
     } else {
       const reply = data.candidates[0].content.parts.map(function(p){ return p.text || ''; }).join('');
       history.push({ role: 'assistant', content: reply });
@@ -777,7 +779,8 @@ async function callClaude(userText, skipDisplay) {
     }
   } catch(e) {
     hideTyping();
-    addMsg('assistant', 'Error de conexión. Verifica tu conexión a internet.');
+    console.error('Error Gemini:', e);
+    addMsg('assistant', 'Error de conexión: ' + e.message);
   }
   isLoading = false;
   document.getElementById('send-btn').disabled = false;
@@ -794,6 +797,18 @@ function sendMessage() {
 function sendQuick(text) {
   if (isLoading) return;
   callClaude(text);
+}
+
+function detectEvalResult(text) {
+  const match = text.match(/(\d)\/5/);
+  if (match) {
+    const score = parseInt(match[1]);
+    try {
+      const scores = JSON.parse(localStorage.getItem('tiq_scores') || '[]');
+      scores.push({ date: new Date().toLocaleDateString('es-ES'), score });
+      localStorage.setItem('tiq_scores', JSON.stringify(scores));
+    } catch(e) { console.warn('localStorage no disponible:', e); }
+  }
 }
 
 init();
