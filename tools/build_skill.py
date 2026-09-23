@@ -4,7 +4,7 @@ Uso: node tools/extract.js tutor.html /tmp/out && python3 tools/build_skill.py /
 import json, base64, re, unicodedata, os, sys
 d = json.load(open(sys.argv[1]))
 out = sys.argv[2]
-ref = os.path.join(out, 'references'); img = os.path.join(out, 'assets', 'img'); data = os.path.join(out, 'data')
+ref = os.path.join(out, 'references', 'banco'); img = os.path.join(out, 'assets', 'img'); data = os.path.join(out, 'data')
 for p in (ref, img, data): os.makedirs(p, exist_ok=True)
 L = 'ABCD'
 def slug(s):
