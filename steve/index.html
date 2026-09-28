@@ -1930,9 +1930,14 @@ function editPro(id){
   document.getElementById('pInst').value=(item.instrumental||[]).join('\n');
   document.getElementById('pFung').value=(item.fungible||[]).join('\n');
   document.getElementById('pSutures').value=(item.sutures||[]).join('\n');
-  document.getElementById('pObs').value=(item.observaciones||[]).join('\n');
+  // La posició es guarda dins d'observaciones com a línies "Posició…": se separen per al formulari
+  const obs=item.observaciones||[];
+  document.getElementById('pPosicio').value=obs.filter(isPosLine).map(l=>l.replace(POS_PREFIX,'')).join('\n');
+  document.getElementById('pObs').value=obs.filter(l=>!isPosLine(l)).join('\n');
   showTab('new');
 }
+const POS_PREFIX=/^Posici[oó] del pacient\s*:\s*/i;
+function isPosLine(l){return /^Posici[oó]/i.test(l)}
 function delProt(id){if(!confirm('¿Eliminar este protocolo?'))return;kb=kb.filter(i=>i.id!==id);saveKB();renderAdminList()}
 function saveProtocol(){
   const msg=document.getElementById('formMsg');
@@ -1959,7 +1964,8 @@ function saveProtocol(){
     instrumental:lines('pInst'),
     fungible:lines('pFung'),
     sutures:lines('pSutures'),
-    observaciones:lines('pObs'),
+    // Posició primer, amb prefix perquè la fitxa, la cerca per intenció i la IA la reconeguin
+    observaciones:[...lines('pPosicio').map(l=>isPosLine(l)?l:'Posició del pacient: '+l),...lines('pObs')],
     criticos:orig?.criticos||[]
   };
   if(editId){const idx=kb.findIndex(i=>i.id===editId);if(idx>-1)kb[idx]=item;else kb.push(item)}else kb.push(item);
@@ -1967,7 +1973,7 @@ function saveProtocol(){
 }
 function clearForm(){
   document.getElementById('editId').value='';
-  ['pNombre','pKw','pAnestesia','pEq','pInst','pFung','pSutures','pObs'].forEach(id=>document.getElementById(id).value='');
+  ['pNombre','pKw','pAnestesia','pPosicio','pEq','pInst','pFung','pSutures','pObs'].forEach(id=>document.getElementById(id).value='');
   setEspSelect();
   document.getElementById('formMsg').style.display='none';
 }
