@@ -398,21 +398,7 @@ textarea.form-input{resize:vertical;min-height:66px;line-height:1.5}
       <div class="form-row">
         <div class="form-group"><label class="form-label">Nom del procediment *</label><input class="form-input" id="pNombre" placeholder="Uretroplàstia"></div>
         <div class="form-group" style="max-width:175px"><label class="form-label">Especialitat *</label>
-          <select class="form-input" id="pEsp">
-            <option>Cirugía Cardíaca</option>
-            <option>Cirugía General</option>
-            <option>Cirugía Ginecológica</option>
-            <option>Cirugía Maxilofacial</option>
-            <option>Neurología</option>
-            <option>Cirugía Plástica</option>
-            <option>Cirugía Torácica</option>
-            <option>Traumatología</option>
-            <option>Cirugía Urológica</option>
-            <option>Cirugía Vascular</option>
-            <option>Otorrinolaringología</option>
-            <option>Oftalmología</option>
-            <option>Urgencias</option>
-          </select>
+          <select class="form-input" id="pEsp"></select>
         </div>
       </div>
       <div class="form-group"><label class="form-label">Keywords de cerca (separades per coma) *</label><input class="form-input" id="pKw" placeholder="uretroplastia, uretra, estenosi"></div>
@@ -896,6 +882,28 @@ const KB_DEFAULT=[
 // Això força un reset automàtic del localStorage a tots els navegadors
 const KB_VERSION = '2026.03.2';
 
+// Llista única d'especialitats: la fan servir el formulari, l'importador de PDF i la normalització
+const ESPECIALIDADES=['Cirugía Cardíaca','Cirugía General','Cirugía Ginecológica','Cirugía Maxilofacial','Cirugía Plástica','Cirugía Torácica','Cirugía Urológica','Cirugía Vascular','Neurocirugía','Oftalmología','Otorrinolaringología','Traumatología','Urgencias','Otra'];
+// Noms antics (importador de PDF i formulari anteriors) → nom canònic
+const ESP_ALIAS={'urologia':'Cirugía Urológica','ginecologia':'Cirugía Ginecológica','orl':'Otorrinolaringología','cardiocirugia':'Cirugía Cardíaca','neurologia':'Neurocirugía'};
+function espKey(s){return String(s||'').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g,'').trim()}
+function normEsp(e){
+  const k=espKey(e);
+  if(!k)return'Otra';
+  return ESPECIALIDADES.find(x=>espKey(x)===k)||ESP_ALIAS[k]||e; // desconeguda: es conserva tal qual
+}
+
+const DEFAULT_IDS=new Set(KB_DEFAULT.map(p=>p.id));
+// Normalitza especialitat i elimina ids duplicats (es queda el primer)
+function prepKB(list){
+  const byId=new Map();
+  (list||[]).forEach(p=>{if(p&&p.id&&!byId.has(p.id))byId.set(p.id,{...p,especialidad:normEsp(p.especialidad)})});
+  return[...byId.values()];
+}
+
+// ids de protocols amb les fotos ja desades a IndexedDB
+const imgSaved=new Set();
+
 let kb=loadKB();
 let profiles=loadProfiles();
 let activePro=(()=>{const id=localStorage.getItem('steve_active_pro');return profiles.find(p=>p.id===id)||profiles[0]})();
@@ -903,31 +911,75 @@ let sessionLog=[], msgCtr=Date.now(), sidebarOpen=true, qxMode=false, recognitio
 
 function loadKB(){
   try {
-    const savedVersion = localStorage.getItem('steve_kb_version');
-    if (savedVersion !== KB_VERSION) {
-      // Versió nova detectada — reseteja el KB però conserva els protocols afegits manualment
-      const saved = localStorage.getItem('steve_kb');
-      if (saved) {
-        const savedKB = JSON.parse(saved);
-        // Conserva protocols amb id que comença per 'c' o 'pdf_' (creats per l'usuari)
-        const userProtos = savedKB.filter(p => p.id.startsWith('c') || p.id.startsWith('pdf_'));
-        const merged = [...KB_DEFAULT, ...userProtos];
-        localStorage.setItem('steve_kb', JSON.stringify(merged));
-        localStorage.setItem('steve_kb_version', KB_VERSION);
-        return merged;
-      }
-      localStorage.setItem('steve_kb_version', KB_VERSION);
-      return [...KB_DEFAULT];
+    const saved = localStorage.getItem('steve_kb');
+    const savedKB = saved ? prepKB(JSON.parse(saved)) : null;
+    if (localStorage.getItem('steve_kb_version') !== KB_VERSION) {
+      // Versió nova: s'actualitzen els protocols per defecte, però es conserven
+      // els creats per l'usuari (id fora de KB_DEFAULT) i els editats (origen:'user').
+      // No es fa servir el prefix de l'id: hi ha protocols per defecte que comencen per 'c'.
+      if (!savedKB) return [...KB_DEFAULT];
+      const edited = new Map(savedKB.filter(p => DEFAULT_IDS.has(p.id) && p.origen === 'user').map(p => [p.id, p]));
+      const userProtos = savedKB.filter(p => !DEFAULT_IDS.has(p.id));
+      return prepKB([...KB_DEFAULT.map(d => edited.get(d.id) || d), ...userProtos]);
     }
-    const s = localStorage.getItem('steve_kb');
-    return s ? JSON.parse(s) : [...KB_DEFAULT];
+    return savedKB || [...KB_DEFAULT];
   } catch {
     return [...KB_DEFAULT];
   }
 }
-function saveKB(){
-  localStorage.setItem('steve_kb', JSON.stringify(kb));
-  localStorage.setItem('steve_kb_version', KB_VERSION);
+
+// ── Fotos a IndexedDB: localStorage (~5 MB) no té espai per a imatges ──
+let imgDbP=null;
+function imgDb(){
+  if(!imgDbP)imgDbP=new Promise((res,rej)=>{
+    const r=indexedDB.open('steve_img',1);
+    r.onupgradeneeded=()=>r.result.createObjectStore('imgs');
+    r.onsuccess=()=>res(r.result);r.onerror=()=>rej(r.error);
+  });
+  return imgDbP;
+}
+async function imgTx(mode,fn){
+  const db=await imgDb();
+  return new Promise((res,rej)=>{
+    const tx=db.transaction('imgs',mode),req=fn(tx.objectStore('imgs'));
+    tx.oncomplete=()=>res(req&&req.result);tx.onerror=tx.onabort=()=>rej(tx.error);
+  });
+}
+async function loadImages(){
+  try{
+    const [keys,vals]=await Promise.all([imgTx('readonly',s=>s.getAllKeys()),imgTx('readonly',s=>s.getAll())]);
+    keys.forEach((id,i)=>{
+      const item=kb.find(p=>p.id===id);
+      imgSaved.add(id);
+      if(item&&!(item.imagenes||[]).length)item.imagenes=vals[i];
+    });
+  }catch(e){console.warn('IndexedDB no disponible:',e)}
+  // Migra fotos antigues de localStorage a IndexedDB i neteja ids duplicats ja desats
+  await saveKB();
+}
+
+async function saveKB(){
+  // 1) Fotos noves a IndexedDB; fotos de protocols eliminats, fora
+  try{
+    for(const p of kb){
+      if((p.imagenes||[]).length&&!imgSaved.has(p.id)){await imgTx('readwrite',s=>s.put(p.imagenes,p.id));imgSaved.add(p.id)}
+    }
+    for(const id of[...imgSaved]){
+      const p=kb.find(i=>i.id===id);
+      if(!p||!(p.imagenes||[]).length){await imgTx('readwrite',s=>s.delete(id));imgSaved.delete(id)}
+    }
+  }catch(e){console.warn('No s\'han pogut desar les fotos a IndexedDB:',e)}
+  // 2) Text a localStorage, sense les fotos que ja són a IndexedDB
+  const lite=kb.map(p=>{if(!imgSaved.has(p.id))return p;const{imagenes,...rest}=p;return rest});
+  try{
+    localStorage.setItem('steve_kb', JSON.stringify(lite));
+    localStorage.setItem('steve_kb_version', KB_VERSION);
+    return true;
+  }catch(e){
+    console.warn('saveKB:',e);
+    alert('⚠ No s\'han pogut desar els canvis: l\'emmagatzematge del navegador és ple. Elimina protocols amb fotos o exporta el JSON com a còpia de seguretat.');
+    return false;
+  }
 }
 function loadProfiles(){try{const s=localStorage.getItem('steve_profiles');if(s)return JSON.parse(s)}catch{}return[{id:'p1',name:'Instrumentista 1',role:'Instrumentista',favorites:[],access:{}}]}
 function saveProfiles(){localStorage.setItem('steve_profiles',JSON.stringify(profiles))}
@@ -1648,8 +1700,9 @@ async function extractPdfImages(arrayBuffer){
     const ctx=canvas.getContext('2d');
     for(let p=1;p<=pdf.numPages;p++){
       const page=await pdf.getPage(p);
-      // Renderitza la pàgina a resolució alta per capturar imatges
-      const viewport=page.getViewport({scale:2.5});
+      // Resolució limitada (màx. 1000 px d'ample): n'hi ha prou per veure la mesa i no omple l'emmagatzematge
+      const scale=Math.min(1.5,1000/page.getViewport({scale:1}).width);
+      const viewport=page.getViewport({scale});
       canvas.width=viewport.width;
       canvas.height=viewport.height;
       await page.render({canvasContext:ctx,viewport}).promise;
@@ -1665,7 +1718,7 @@ async function extractPdfImages(arrayBuffer){
       const pct=nonWhite/(imgData.length/4/sample);
       // Si >15% dels píxels no són blancs → la pàgina conté una imatge
       if(pct>0.15){
-        imagenes.push(canvas.toDataURL('image/jpeg',0.82));
+        imagenes.push(canvas.toDataURL('image/jpeg',0.75));
       }
     }
     canvas.remove();
@@ -1684,12 +1737,12 @@ function parsePdfText(rawText, filename, imagenes=[]){
   // Detecta la especialidad por palabras clave en el texto completo
   const specMap=[
     {keys:['laparoscop','colecist','herni','apendic','colect','resect','gastrect'],esp:'Cirugía General'},
-    {keys:['cesárea','cesarea','hister','ectopia','ginecol','parto','ovario'],esp:'Ginecología'},
+    {keys:['cesárea','cesarea','hister','ectopia','ginecol','parto','ovario'],esp:'Cirugía Ginecológica'},
     {keys:['cadera','rodilla','columna','fractur','artroplast','ortoped','traumatol'],esp:'Traumatología'},
-    {keys:['próstata','prostata','ureter','vejiga','nefr','cistoscop','urol'],esp:'Urología'},
-    {keys:['oído','oido','nariz','garganta','amígdal','amigdal','otorrinol','septum','seno'],esp:'ORL'},
+    {keys:['próstata','prostata','ureter','vejiga','nefr','cistoscop','urol'],esp:'Cirugía Urológica'},
+    {keys:['oído','oido','nariz','garganta','amígdal','amigdal','otorrinol','septum','seno'],esp:'Otorrinolaringología'},
     {keys:['catarata','vitrec','oftalmol','retina','glaucom','cornea'],esp:'Oftalmología'},
-    {keys:['coronar','bypass','valvul','aorta','cardiocirugía','corazón'],esp:'Cardiocirugía'},
+    {keys:['coronar','bypass','valvul','aorta','cardiocirugía','corazón'],esp:'Cirugía Cardíaca'},
     {keys:['cerebr','medula','craneal','neurocirugía','tumor cerebral'],esp:'Neurocirugía'},
     {keys:['arteria','vena','varices','bypass vascular','aneurism'],esp:'Cirugía Vascular'},
   ];
@@ -1747,6 +1800,7 @@ function parsePdfText(rawText, filename, imagenes=[]){
 
   return [{
     id:'pdf_'+Date.now(),
+    origen:'user',
     nombre: titleFromFile,
     keywords,
     especialidad,
@@ -1817,7 +1871,7 @@ function buildPdfPreview(p){
   </div>`;
 }
 
-function confirmSavePdf(idx){
+async function confirmSavePdf(idx){
   const protocols=window._pdfParsed;
   if(!protocols||!protocols[idx])return;
   const p=protocols[idx];
@@ -1830,11 +1884,17 @@ function confirmSavePdf(idx){
   if(!p.keywords||p.keywords.length===0){
     p.keywords=p.nombre.toLowerCase().split(' ').filter(w=>w.length>3).slice(0,5);
   }
+  p.origen='user';
   kb.push(p);
-  saveKB();
+  const msg=document.getElementById('pdfMsg');
+  if(!await saveKB()){
+    kb=kb.filter(i=>i!==p);
+    msg.textContent='✕ No s\'ha pogut desar: l\'emmagatzematge del navegador és ple.';
+    msg.style.color='var(--red)';msg.style.display='block';
+    return;
+  }
   renderAdminList();
   updateSidebarSpecs();
-  const msg=document.getElementById('pdfMsg');
   msg.textContent=`✓ Protocolo "${p.nombre}" guardado en la base de conocimiento.`;
   msg.style.color='green';msg.style.display='block';
   // Deshabilita el botón para evitar doble guardado
@@ -1863,7 +1923,7 @@ function editPro(id){
   const item=kb.find(i=>i.id===id);if(!item)return;
   document.getElementById('editId').value=item.id;
   document.getElementById('pNombre').value=item.nombre;
-  document.getElementById('pEsp').value=item.especialidad;
+  setEspSelect(item.especialidad);
   document.getElementById('pKw').value=item.keywords.join(', ');
   document.getElementById('pAnestesia').value=(item.anestesia||[]).join('\n');
   document.getElementById('pEq').value=(item.equipos||[]).join('\n');
@@ -1884,8 +1944,13 @@ function saveProtocol(){
   msg.style.display='none';
   const lines=el=>document.getElementById(el).value.split('\n').map(l=>l.trim()).filter(Boolean);
   const editId=document.getElementById('editId').value;
+  const orig=editId?kb.find(i=>i.id===editId):null;
   const item={
+    // Conserva els camps que el formulari no mostra (criticos, imagenes…)
+    ...(orig||{}),
     id:editId||'c'+Date.now(),
+    // Marca'l com a propi: així una versió nova de KB_DEFAULT no sobreescriu l'edició
+    origen:'user',
     nombre,
     keywords:kw.split(',').map(k=>k.trim().toLowerCase()).filter(Boolean),
     especialidad:document.getElementById('pEsp').value,
@@ -1895,7 +1960,7 @@ function saveProtocol(){
     fungible:lines('pFung'),
     sutures:lines('pSutures'),
     observaciones:lines('pObs'),
-    criticos:[]
+    criticos:orig?.criticos||[]
   };
   if(editId){const idx=kb.findIndex(i=>i.id===editId);if(idx>-1)kb[idx]=item;else kb.push(item)}else kb.push(item);
   saveKB();clearForm();showTab('list');renderAdminList();
@@ -1903,14 +1968,13 @@ function saveProtocol(){
 function clearForm(){
   document.getElementById('editId').value='';
   ['pNombre','pKw','pAnestesia','pEq','pInst','pFung','pSutures','pObs'].forEach(id=>document.getElementById(id).value='');
-  const sel=document.getElementById('pEsp');
-  if(sel&&sel.options.length)sel.selectedIndex=0;
+  setEspSelect();
   document.getElementById('formMsg').style.display='none';
 }
 function doExport(btn){document.getElementById('exportArea').value=JSON.stringify(kb,null,2);navigator.clipboard.writeText(JSON.stringify(kb,null,2)).catch(()=>{});if(btn){btn.textContent='✓ Copiado';setTimeout(()=>btn.textContent='Copiar JSON',1500)}}
 function doImport(){
   const msg=document.getElementById('importMsg');
-  try{const d=JSON.parse(document.getElementById('importArea').value);if(!Array.isArray(d)||!d[0]?.nombre)throw new Error('Formato inválido');kb=d;saveKB();msg.textContent='✓ '+d.length+' protocolos importados.';msg.style.color='green';msg.style.display='block';renderAdminList()}
+  try{const d=JSON.parse(document.getElementById('importArea').value);if(!Array.isArray(d)||!d[0]?.nombre)throw new Error('Formato inválido');kb=prepKB(d);saveKB();msg.textContent='✓ '+kb.length+' protocolos importados.';msg.style.color='green';msg.style.display='block';renderAdminList()}
   catch(e){msg.textContent='✕ Error: '+e.message;msg.style.color='var(--red)';msg.style.display='block'}
 }
 function resetKB(){if(!confirm('¿Restaurar base de conocimiento original?'))return;kb=[...KB_DEFAULT];saveKB();renderAdminList();const msg=document.getElementById('importMsg');msg.textContent='✓ Base restaurada.';msg.style.color='green';msg.style.display='block'}
@@ -2002,6 +2066,14 @@ function updateSidebarSpecs(){
   c.innerHTML=specs.map(s=>`<button class="specialty-btn" onclick="filterSpec('${ea(s)}')">${esc(s)}</button>`).join('');
 }
 
+// Omple el selector d'especialitats; si el protocol en té una de desconeguda, l'afegeix per no perdre-la
+function setEspSelect(val){
+  const sel=document.getElementById('pEsp');
+  const opts=ESPECIALIDADES.includes(val)||!val?ESPECIALIDADES:[...ESPECIALIDADES,val];
+  sel.innerHTML=opts.map(e=>`<option>${esc(e)}</option>`).join('');
+  sel.value=val||ESPECIALIDADES[0];
+}
+
 // ══════════════════════════════════════════
 // MODAL HELPERS
 // ══════════════════════════════════════════
@@ -2035,7 +2107,8 @@ if('serviceWorker' in navigator){
 // ══════════════════════════════════════════
 // INIT
 // ══════════════════════════════════════════
-updateProUI();updateFavList();updateFrequents();updateSession();updateSidebarSpecs();
+updateProUI();updateFavList();updateFrequents();updateSession();updateSidebarSpecs();setEspSelect();
+loadImages();
 </script>
 </body>
 </html>
