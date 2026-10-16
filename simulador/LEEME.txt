@@ -1,0 +1,8 @@
+SIMULADOR DE INSTRUMENTAL QUIRÚRGICO
+
+1. Descomprime el ZIP entero (botón derecho > "Extraer todo"). No abras el HTML desde dentro del ZIP.
+2. Abre index.html con el navegador (Chrome, Edge, Firefox o Safari) desde la carpeta descomprimida.
+3. Deja la carpeta "img" junto a index.html: contiene las 57 imágenes del modo visual.
+
+En el móvil, abrir un HTML descargado no suele cargar las imágenes: usa el enlace web del simulador.
+Funciona sin internet. Tu progreso se guarda en el navegador de este dispositivo.
